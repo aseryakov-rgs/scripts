@@ -1,0 +1,11 @@
+reg1csrvc.cmd
+register-ras.bat
+Подключить диск R.bat 
+OneScript/
+SQL/
+SQL_jobs/
+NewScheduledTaskAction_monitor_mssql.ps1
+run_hide_DO30_v1_bat.xml
+run_hide_DO30_v2_1c.xml
+run_Interactive_1c_DO30_1c.xml
+run_Interactive_1c_DO30_10-30.xml
