@@ -1,9 +1,9 @@
 ﻿
 # Логирование событий
 function Log-Event {
-  param (
-    [string]$Message
-  )
+    param (
+        [string]$Message
+    )
 
     $Stamp = (Get-Date).toString("yyyy/MM/dd HH:mm:ss")
     $LogMessage = "$Stamp $Message"
@@ -13,9 +13,9 @@ function Log-Event {
 
 function SearchAndMoveFiles {
     param (
-    [string]$UserPath,
-    [string]$destinationPath
-)
+        [string]$UserPath,
+        [string]$destinationPath
+    )
     # Ищем файлы
     $filesFound = @()
     
@@ -23,7 +23,7 @@ function SearchAndMoveFiles {
         
         foreach ($file in (Get-ChildItem -Path $UserPath -Include "1Cv8.1CD", "*.cf", "*.dt" -Recurse)) {
             if ((Test-Path -Path $file.FullName) -eq $true) {
-                $filesFound += ,$file
+                $filesFound += , $file
             }
         }
     }
@@ -31,8 +31,7 @@ function SearchAndMoveFiles {
     foreach ($file in $filesFound) {
         
         # Создаем каталог если его нет
-        if (-Not (Test-Path -Path $destinationPath))
-            {
+        if (-Not (Test-Path -Path $destinationPath)) {
             New-Item -ItemType Directory -Path $destinationPath
         }
         
@@ -42,40 +41,39 @@ function SearchAndMoveFiles {
             $PathInfobase1C = $file.FullName | Split-Path    
             Move-Item -Path $PathInfobase1C -Destination $destinationPath -Force
         
-        } elseif ($file.Name -match ".*\.cf" -or $file.Name -match ".*\.dt") {
+        }
+        elseif ($file.Name -match ".*\.cf" -or $file.Name -match ".*\.dt") {
             
             # Ищем полный путь к каталогу исходного файла
-            $sourceDir  = $file.FullName | Split-Path
+            $sourceDir = $file.FullName | Split-Path
 
-            $DestinationSubdir =    Split-Path -Leaf $sourceDir
-            $DestinationSubPath = $destinationPath +"\" + $DestinationSubdir
+            $DestinationSubdir = Split-Path -Leaf $sourceDir
+            $DestinationSubPath = $destinationPath + "\" + $DestinationSubdir
             $DestinationFilename = $DestinationSubPath + '\' + $file.BaseName + $file.Extension
             #если катaлог создается впервые просто перемещаем файлы
-            if (-Not (Test-Path -Path $DestinationSubPath))
-            
-                {
-                    New-Item -ItemType Directory -Path $DestinationSubPath
-                    
-                    Move-Item -Path $file.FullName -Destination $DestinationSubPath -Force
+            if (-Not (Test-Path -Path $DestinationSubPath)) {
+                New-Item -ItemType Directory -Path $DestinationSubPath
                 
+                Move-Item -Path $file.FullName -Destination $DestinationSubPath -Force
+            
                 #если катaлог уже существует исключаем перезапись файлов с одинаковым именем
-                # предвариетльно файл источник переименуем
-                }else
-                    {
-                    #проверяем есть ли уже такие файлы в каталоге
-                    if (((Test-Path -Path $file.FullName) -eq $true) -and ((Test-Path -Path $DestinationFilename) -eq $true)) {
-                        
-                        # если есть добавляем к файлу постфикс даты чтобы не перезаписать файл.
-                        $DestinationFilename = $sourceDir + '\' + $file.BaseName + '_' + (Get-Date).toString("yyyyMMddHHmmss") + '_cp' + $file.Extension
-                        Rename-Item -Path ($file.FullName) -NewName ($DestinationFilename)
-                        Move-Item -Path $DestinationFilename -Destination $DestinationSubPath -Force
+                # предварительно файл источник переименуем
+            }
+            else {
+                #проверяем есть ли уже такие файлы в каталоге
+                if (((Test-Path -Path $file.FullName) -eq $true) -and ((Test-Path -Path $DestinationFilename) -eq $true)) {
+                    
+                    # если есть добавляем к файлу постфикс даты чтобы не перезаписать файл.
+                    $DestinationFilename = $sourceDir + '\' + $file.BaseName + '_' + (Get-Date).toString("yyyyMMddHHmmss") + '_cp' + $file.Extension
+                    Rename-Item -Path ($file.FullName) -NewName ($DestinationFilename)
+                    Move-Item -Path $DestinationFilename -Destination $DestinationSubPath -Force
 
-                    }else{
-                            #$File.FullName = $sourceDir + '\' + $file.BaseName + $file.Extension
-                            Move-Item -Path $file.FullName -Destination $DestinationSubPath -Force
-                        }         
+                }
+                else {
+                    Move-Item -Path $file.FullName -Destination $DestinationSubPath -Force
+                }         
 
-                    }
+            }
         } 
     }
     
@@ -89,7 +87,7 @@ $UsersPath = "C:\Users"
 
 cd $UsersPath
 
-$AllUsers = Get-ChildItem $UsersPath -Exclude "test" | Where-Object {$_.Name -match "^[a-z]"}
+$AllUsers = Get-ChildItem $UsersPath -Exclude "test" | Where-Object { $_.Name -match "^[a-z]" }
 
 #---Очистка папок профилей пользователей---
 ForEach ($U in $AllUsers) {
@@ -116,7 +114,8 @@ ForEach ($User in $AllUsers) {
         SearchAndMoveFiles  -UserPath $UserPath -destinationPath $destinationPath
         Log-Event -Message "Successfully execution operation SearchAndMoveFiles for user $($username)"
 
-    } catch {
+    }
+    catch {
         
         Log-Event -Message "Failed to execution SearchAndMoveFiles operation: $($Error[0].Message)"
 
