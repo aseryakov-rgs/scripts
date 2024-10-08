@@ -84,7 +84,7 @@ function SearchAndMoveFiles {
 Log-Event -Message "---Start operation SearchAndMoveFiles"
 
 $UsersPath = "C:\Users"
-
+$destinationPathRoot = "R:\_FilesOnDelete\"
 cd $UsersPath
 
 $AllUsers = Get-ChildItem $UsersPath -Exclude "test" | Where-Object { $_.Name -match "^[a-z]" }
@@ -106,7 +106,7 @@ ForEach ($User in $AllUsers) {
     
     # Путь к каталогу текущего пользователя
     $UserPath = $UsersPath + "\" + $User.Name 
-    $destinationPath = "R:\_FilesOnDelete\$($username)"
+    $destinationPath = "$destinationPathRoot$($username)"
 
     # Ищем и перемещаем файлы
     try {
@@ -122,5 +122,8 @@ ForEach ($User in $AllUsers) {
     }
 
 }
+
+#удаляем файлы старше 1  месяца
+Get-ChildItem -Path $destinationPathRoot -Recurse -Force | Where-Object { $_.LastWriteTime -lt (Get-Date).AddMonths(-1)} | Remove-Item -Force -Confirm:$false
 
 Log-Event -Message "---End operation SearchAndMoveFiles"
