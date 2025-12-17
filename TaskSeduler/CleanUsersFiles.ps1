@@ -26,7 +26,7 @@
     1.0.0 (2025-12-17) - Первоначальная версия
     
 .LINK
-    https://github.com/yourname/project
+    https://github.com/aseryakov-rgs/scripts/blob/main/TaskSeduler/CleanUsersFiles.ps1
 
 #>
 #endregion
