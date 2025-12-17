@@ -1,3 +1,35 @@
+#region AUTHOR
+<# 
+.SYNOPSIS
+    Выполняет перенос и удаление файлов пользовтаелей и временных файлов 1C
+
+.DESCRIPTION
+    Подробное описание функциональности
+
+.AUTHOR
+    Aleksandr Seryakov <aleksandr.rgspc@gmail.com>
+
+.COPYRIGHT
+    © 2025 Aleksandr Seryakov
+    This script is protected by copyright law.
+
+.LICENSE
+    MIT License / Proprietary / GPL-3.0
+    
+.CREATION DATE
+    2025-12-17
+
+.VERSION
+    1.0.0
+
+.CHANGELOG
+    1.0.0 (2025-12-17) - Первоначальная версия
+    
+.LINK
+    https://github.com/yourname/project
+
+#>
+#endregion
 ﻿
 # Логирование событий
 function Log-Event {
