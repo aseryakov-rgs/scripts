@@ -14,7 +14,7 @@
     This script is protected by copyright law.
 
 .LICENSE
-    MIT License / Proprietary / GPL-3.0
+    MIT License
     
 .CREATION DATE
     2025-12-17
