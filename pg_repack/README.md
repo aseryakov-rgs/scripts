@@ -209,7 +209,7 @@ rpmbuild -bb --define 'pgmajorversion 18' --define 'pginstdir /usr/pgsql-18' \
 
 | Сообщение | Причина | Решение |
 |---|---|---|
-| `Нет соответствия аргументу: pg_repack_18` / `Error: Unable to find a match: pg_repack_18` при `dnf install` | репозиторий PGDG не подключён (или файл репозитория старый, без секции `[pgdg18]`, или репозиторий отключён) | подключить/обновить репозиторий и включить `pgdg18` — команды ниже, либо просто запустить `./diagnose-pgdg-pg18.sh` (с `--fix` сам починит) |
+| `Нет соответствия аргументу: pg_repack_18` / `Error: Unable to find a match: pg_repack_18` при `dnf install` | **две разные причины**: (а) репозиторий PGDG не подключён/устарел/отключён; (б) у вас PostgreSQL не из PGDG, а от Postgres Professional (в т.ч. «для 1С») — тогда пакета `pg_repack_18` в принципе нет, см. раздел 0‑Б | (а) подключить/обновить PGDG и включить `pgdg18`; (б) искать `pg-repack-1c-18` / собирать из исходников. Проще всего: запустить `./diagnose-postgres-pg18.sh` — он определит ваш случай |
 | `/usr/bin/clang-19: No such file or directory` + `Error 127` при `make`/`make install` (или `make[1]: clang: command not found`) | в `postgresql18-devel` включён `with_llvm=yes`, а clang/llvm не установлены | добавить `with_llvm=no` в `make` и `make install`; либо поставить clang/llvm нужной версии |
 | `/usr/bin/ld: cannot find -lcurl` | PG18 собран с libpq-oauth, `-lcurl` есть в `pg_config --libs` | `sudo dnf install -y libcurl-devel` |
 | `/usr/bin/ld: cannot find -lnuma` | PG18 собран с NUMA-поддержкой | `sudo dnf install -y numactl-devel` |
@@ -228,6 +228,117 @@ rpmbuild -bb --define 'pgmajorversion 18' --define 'pginstdir /usr/pgsql-18' \
 export PATH=/usr/pgsql-18/bin:$PATH
 ./test-pg_repack.sh --dbname mydb --user postgres                 # локальный сокет
 ./test-pg_repack.sh --dbname mydb --user postgres --host localhost --port 5432
+```
+
+---
+
+## 0-Б. ЧАСТНЫЙ СЛУЧАЙ: PostgreSQL «для 1С» (Postgres Pro 1C)
+
+Как понять, что у вас именно этот случай:
+
+* в `/etc/yum.repos.d/` есть файл вида `postgresql-1c-18.repo`, а `pgdg-redhat-repo` **не** установлен;
+* `rpm -qa | grep -i -E '1c|pgpro'` показывает пакеты `postgrespro-1c-18*`;
+* PostgreSQL установлен в `/opt/pgpro/1c-18`, а не в `/usr/pgsql-18`.
+
+### Почему `dnf install pg_repack_18` не работает (и не заработает)
+
+* `pg_repack_18` — это имя пакета **репозитория PGDG** (`download.postgresql.org`). У Postgres Pro
+  свой репозиторий, и такого пакета в нём нет. Сообщение «Нет соответствия аргументу» тут ожидаемо,
+  это не поломка вашей системы.
+* Пакет `pg_repack 1.4.6` из AppStream — для **ванильного** PostgreSQL (собирается и ставится в
+  `/usr/pgsql-…`). Он не подходит вашему серверу: расширение для другой сборки PostgreSQL
+  не загрузится. Ставить его не нужно.
+* Postgres Professional поставляет pg_repack **готовым пакетом**, но с другим именем:
+  `pg-repack-std-18` (Standard), `pg-repack-ent-18` (Enterprise), для редакции 1С — по той же логике
+  `pg-repack-1c-18`. Обратите внимание: **дефис, а не подчёркивание**. Поэтому проверять нужно так:
+
+```bash
+dnf list --available '*repack*'        # ← именно так; '*pg_repack*' этот пакет НЕ найдёт
+dnf provides 'pg-repack*'
+```
+
+### Путь 1 (самый простой): готовый пакет Postgres Pro
+
+```bash
+dnf list --available '*repack*'
+# если нашелся pg-repack-1c-18 (или pg-repack-std-18):
+sudo dnf install -y pg-repack-1c-18
+ls -l /opt/pgpro/1c-18/bin/pg_repack
+# включить расширение в нужных базах:
+sudo -u postgres psql -d mydb -c "CREATE EXTENSION pg_repack;"
+```
+
+### Путь 2: собрать из исходников против вашего `pg_config`
+
+У Postgres Pro `pg_config` **не** попадает в `PATH` — он лежит в `/opt/pgpro/1c-18/bin/pg_config`
+и приходит с пакетом разработчика (`postgrespro-1c-18-devel`).
+
+```bash
+# 1) проверить, что pg_config вообще есть
+/opt/pgpro/1c-18/bin/pg_config --version
+/opt/pgpro/1c-18/bin/pg_config --libs
+
+# 2) если его нет — поставить пакет разработчика вашего продукта
+dnf list --available '*1c-18*'                 # посмотреть точные имена пакетов
+sudo dnf install -y postgrespro-1c-18-devel
+# подсказка, если имя другое:
+# dnf provides '*/pg_config'
+
+# 3) инструменты сборки и библиотеки
+sudo dnf install -y gcc make zlib-devel readline-devel lz4-devel libzstd-devel openssl-devel
+
+# 4) собрать pg_repack 1.5.3
+cd /tmp
+curl -LO https://github.com/reorg/pg_repack/archive/refs/tags/ver_1.5.3.tar.gz
+tar -xzf ver_1.5.3.tar.gz
+cd pg_repack-ver-1.5.3 2>/dev/null || cd pg_repack-ver_1.5.3
+
+export PG_CONFIG=/opt/pgpro/1c-18/bin/pg_config
+make        PG_CONFIG=$PG_CONFIG with_llvm=no
+sudo make install PG_CONFIG=$PG_CONFIG with_llvm=no
+
+# 5) включить расширение в базах
+sudo -u postgres psql -d mydb -c "CREATE EXTENSION pg_repack;"
+/opt/pgpro/1c-18/bin/pg_repack --version
+```
+
+Ключ `with_llvm=no` оставьте: он убирает зависимость от `clang`/`llvm-lto`, которая как раз и
+ломала ваши предыдущие сборки.
+
+### Путь 3 (запасной): собрать на PGDG-версии и перенести модуль
+
+Если dev-пакет Postgres Pro получить нельзя, можно собрать `pg_repack.so` на PostgreSQL 18 из PGDG
+(та же major-версия) и скопировать три файла в вашу установку. Так делать **можно, но осторожно**:
+Postgres Pro — это пропатченный PostgreSQL, поэтому проверьте на тестовой базе.
+
+```bash
+# на машине с postgresql18-devel (или в контейнере):
+#   make PG_CONFIG=/usr/pgsql-18/bin/pg_config with_llvm=no
+# затем на сервере 1С, зная пути своей установки:
+/opt/pgpro/1c-18/bin/pg_config --pkglibdir     # куда положить pg_repack.so
+/opt/pgpro/1c-18/bin/pg_config --sharedir      # куда положить pg_repack.control и pg_repack--1.5.3.sql (в подкаталог extension)
+```
+
+Обязательно сверьте версии: расширение в базе и клиент должны быть одной версии
+(иначе `ERROR: program 'pg_repack X' does not match database library 'pg_repack Y'`).
+
+### Ошибки именно в случае «1С»
+
+| Сообщение | Причина | Решение |
+|---|---|---|
+| `Нет соответствия аргументу: pg_repack_18` | в репозитории Postgres Pro нет пакетов PGDG с таким именем | искать `pg-repack-1c-18` (`dnf list --available '*repack*'`) или собирать из исходников (Путь 2) |
+| `*** pg_config not found. Stop.` | у Postgres Pro `pg_config` не в `PATH` | `make PG_CONFIG=/opt/pgpro/1c-18/bin/pg_config ...` |
+| `fatal error: postgres.h: No such file or directory` | не установлен `postgrespro-1c-18-devel` | поставить его из вашего репозитория (`dnf provides '*/pg_config'` подскажет имя) |
+| `ERROR: could not load library ".../pg_repack.so": undefined symbol` | модуль собран против другого PostgreSQL (например, PGDG `/usr/pgsql-18`) или другой версии | пересобрать с `PG_CONFIG=/opt/pgpro/1c-18/bin/pg_config` |
+| `ERROR: pg_repack failed with error: pg_repack 1.5.3 is not installed in the database` | расширение не включено в эту базу | `CREATE EXTENSION pg_repack;` под суперпользователем |
+| `dnf install pg_repack` предлагает версию 1.4.6 из `appstream` | это пакет для ванильного PostgreSQL | не ставить; использовать Путь 1 или 2 |
+
+### Диагностика одним скриптом
+
+```bash
+chmod +x diagnose-postgres-pg18.sh
+./diagnose-postgres-pg18.sh          # покажет: чей PostgreSQL, где pg_config, есть ли готовый пакет
+sudo ./diagnose-postgres-pg18.sh --fix   # и попробует поставить готовый пакет, если он есть
 ```
 
 ---
@@ -770,6 +881,10 @@ sudo make install PG_CONFIG=/usr/pgsql-18/bin/pg_config with_llvm=no
 ### Scripts in this folder
 
 * `install-pg_repack.sh` — does steps 1–5 automatically (OS detection, dependencies, download,
-  build, install, verification). Run `./install-pg_repack.sh --help`.
+  build, install, verification). It understands both PGDG (`/usr/pgsql-18`) and Postgres Pro /
+  Postgres Pro for 1C (`/opt/pgpro/1c-18`, dev package `postgrespro-1c-18-devel`) layouts.
+  Run `./install-pg_repack.sh --help`.
 * `test-pg_repack.sh` — end-to-end smoke test on a temporary table (`PASS`/`FAIL`).
+* `diagnose-postgres-pg18.sh` — tells you which PostgreSQL you have, where `pg_config` is and
+  whether a ready-made `pg_repack`/`pg-repack` package exists; `--fix` tries to install it.
 * `pg_repack_18.spec` — self-contained RPM spec for AlmaLinux/RHEL 9 + PostgreSQL 18.

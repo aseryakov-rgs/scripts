@@ -107,6 +107,7 @@ find_pg_config() {
   # типовые места установки PostgreSQL
   for c in /usr/lib/postgresql/*/bin/pg_config \
            /usr/pgsql-*/bin/pg_config \
+           /opt/pgpro/*/bin/pg_config \
            /usr/local/pgsql/bin/pg_config \
            /opt/postgresql*/bin/pg_config; do
     [ -x "$c" ] || continue
@@ -150,6 +151,23 @@ fi
 # ---------------------------------------------------------------------------
 # 3. Ставим пакеты для сборки / install build dependencies
 # ---------------------------------------------------------------------------
+# Имя пакета с pg_config / PGXS / заголовками зависит от того, чей это PostgreSQL:
+#   PGDG или дистрибутив   -> postgresql18-devel
+#   Postgres Pro для 1С    -> postgrespro-1c-18-devel
+#   Postgres Pro Standard  -> postgrespro-std-18-devel
+#   Postgres Pro Enterprise-> postgrespro-ent-18-devel
+devel_pkg_name() {
+  if [ -n "${PG_CONFIG_BIN:-}" ] && [ -n "${PG_MAJOR:-}" ]; then
+    case "$PG_CONFIG_BIN" in
+      /opt/pgpro/*/bin/pg_config)
+        local ed="${PG_CONFIG_BIN#/opt/pgpro/}"; ed="${ed%%/*}"
+        echo "postgrespro-${ed}-devel"; return 0
+        ;;
+    esac
+  fi
+  echo "postgresql${PG_MAJOR:-}-devel"
+}
+
 install_deps() {
   case "$PKG" in
     apt-get)
@@ -161,14 +179,21 @@ install_deps() {
       fi
       ;;
     dnf|yum)
-      # на RHEL/Alma/Rocky пакеты PostgreSQL берутся из репозитория PGDG;
-      # readline/lz4/zstd/openssl/libcurl/numactl нужны потому, что сборка PostgreSQL
-      # (особенно 18) перечисляет их в "pg_config --libs" (-lz -llz4 -lzstd -lssl -lcrypto -lcurl -lnuma)
+      # на RHEL/Alma/Rocky PostgreSQL обычно из репозитория PGDG, но бывает и Postgres Pro
+      # (в т.ч. «для 1С»); readline/lz4/zstd/openssl/libcurl/numactl нужны потому, что сборка
+      # PostgreSQL (особенно 18) перечисляет их в "pg_config --libs" (-lz -llz4 -lzstd -lssl -lcrypto -lcurl -lnuma)
+      DEVEL_PKG="$(devel_pkg_name)"
+      log "dev-пакет для сборки: $DEVEL_PKG"
       $SUDO "$PKG" install -y gcc make curl tar \
-        "postgresql$PG_MAJOR-devel" \
         readline-devel zlib-devel lz4-devel libzstd-devel openssl-devel \
-        libcurl-devel numactl-devel
-      $SUDO dnf -y install rpm-build rpmdevtools 2>/dev/null || true
+        libcurl-devel numactl-devel \
+        || warn "часть пакетов не установилась — возможно, у вас не PGDG-репозиторий"
+      if ! $SUDO "$PKG" install -y "$DEVEL_PKG"; then
+        warn "пакет $DEVEL_PKG недоступен — пробую postgresql$PG_MAJOR-devel"
+        $SUDO "$PKG" install -y "postgresql$PG_MAJOR-devel" \
+          || warn "и он недоступен. Поставьте dev-пакет вашего PostgreSQL вручную (подсказка: dnf provides '*/pg_config')"
+      fi
+      $SUDO "$PKG" -y install rpm-build rpmdevtools 2>/dev/null || true
       ;;
     zypper)
       $SUDO zypper --non-interactive install gcc make curl tar \
