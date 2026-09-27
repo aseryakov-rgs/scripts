@@ -31,6 +31,206 @@ pg_repack состоит из **двух частей**, и обе ставят�
 
 ---
 
+## 0-А. ВАШ СЛУЧАЙ: AlmaLinux 9 + PostgreSQL 18 и сборка RPM
+
+Это отдельный раздел для конфигурации **AlmaLinux 9 (MantisBT 9.8) + PostgreSQL 18
+из репозитория PGDG**, где последняя команда была
+`rpmbuild -bb ~/rpmbuild/SPECS/pg_repack_18.spec`.
+
+### Почему раньше падало (три реальные причины для PG18)
+
+1. **LLVM/JIT-биткод.** В `postgresql18-devel` из PGDG прописано `with_llvm = yes`
+   (JIT-компиляция). Поэтому `make` и `make install` дополнительно вызывают
+   `clang` и `llvm-lto`, даже если вам это не нужно. Если clang нет — сборка
+   обрывается на середине. Реальный вывод (воспроизведено, PGXS):
+   ```
+   /usr/bin/clang-19 -Wno-ignored-attributes -O2 ... -flto=thin -emit-llvm -c -o pg_repack.bc pg_repack.c
+   make[1]: /usr/bin/clang-19: No such file or directory
+   make[1]: *** [.../src/Makefile.global:1093: pg_repack.bc] Error 127
+   ```
+   **Лечится флагом `with_llvm=no`** (проверено: сборка и установка проходят,
+   файлы `.bc` не создаются).
+2. **Новые библиотеки у PG18.** В PG18 сборка PostgreSQL из PGDG добавила в
+   `pg_config --libs` библиотеки `-lcurl` и `-lnuma` (libpq-oauth и NUMA).
+   Значит для линковки pg_repack нужны `libcurl-devel` и `numactl-devel`,
+   иначе будет `/usr/bin/ld: cannot find -lcurl` или `-lnuma`.
+3. **Макросы в чужом спеке.** Официальный спек PGDG (`pgdg-rpms`,
+   `rpm/redhat/18/pg_repack`) использует макросы `%{pginstdir}` и
+   `%{pgmajorversion}`, которые задаёт **инфраструктура сборки PGDG**
+   (пакет `pgdg-srpm-macros`), а не `postgresql18-devel`. При локальном
+   `rpmbuild` они не определены → файлы уезжают не в `/usr/pgsql-18`, а в
+   `/bin`, `/lib`, и появляются ошибки вида
+   `error: File not found: .../usr/pgsql-18/bin/pg_repack`.
+   Либо задайте их вручную (см. ниже), либо используйте готовый спек
+   `pg_repack_18.spec` из этого каталога (в нём всё определено).
+
+### Шаг A0. Проверить/поставить PostgreSQL 18 и dev-пакет
+
+```bash
+# репозиторий PGDG (один раз; для EL-9 ссылка именно такая)
+sudo dnf install -y https://download.postgresql.org/pub/repos/yum/reporpms/EL-9-x86_64/pgdg-redhat-repo-latest.noarch.rpm
+sudo dnf -qy module disable postgresql        # отключает модуль postgresql из AppStream
+
+# сервер, клиент и dev-пакет (dev-пакет обязателен: в нём pg_config, PGXS и заголовки)
+sudo dnf install -y postgresql18-server postgresql18 postgresql18-devel
+
+# если база ещё не инициализирована (каталога /var/lib/pgsql/18/data нет):
+sudo /usr/pgsql-18/bin/postgresql-18-setup initdb
+sudo systemctl enable --now postgresql-18
+
+# проверка:
+/usr/pgsql-18/bin/pg_config --version          # PostgreSQL 18.x
+sudo -u postgres /usr/pgsql-18/bin/psql -c "SHOW server_version;"
+sudo -u postgres /usr/pgsql-18/bin/psql -c "SHOW server_version_num;"
+```
+
+> **Важно:** `pg_config` у PGDG-пакетов лежит в `/usr/pgsql-18/bin` и **не** попадает
+> в `PATH` автоматически. Либо пишите полный путь
+> `PG_CONFIG=/usr/pgsql-18/bin/pg_config`, либо:
+> ```bash
+> echo 'export PATH=/usr/pgsql-18/bin:$PATH' | sudo tee /etc/profile.d/pgsql18.sh
+> . /etc/profile.d/pgsql18.sh
+> ```
+
+### Шаг A1. Инструменты сборки
+
+```bash
+sudo dnf install -y gcc make rpmdevtools dnf-plugins-core
+# библиотеки: zlib обязательна, остальные нужны, потому что PG18 собран с ними
+sudo dnf install -y readline-devel zlib-devel lz4-devel libzstd-devel openssl-devel libcurl-devel numactl-devel
+```
+
+### Вариант 1 (самый быстрый): взять готовый RPM из PGDG
+
+Сборка не нужна вообще — PGDG уже собирает pg_repack под PostgreSQL 18:
+
+```bash
+sudo dnf install -y pg_repack_18
+ls -l /usr/pgsql-18/bin/pg_repack
+# остаётся только включить расширение в базе:
+sudo -u postgres psql -d mydb -c "CREATE EXTENSION pg_repack;"
+```
+
+Это тот же pg_repack 1.5.3 — просто уже собранный. Свой RPM имеет смысл, если
+нужен свой патч/флаги или нет доступа к репозиторию.
+
+### Вариант 2: собрать из исходников через make (минимум сюрпризов)
+
+```bash
+cd /tmp
+curl -LO https://github.com/reorg/pg_repack/archive/refs/tags/ver_1.5.3.tar.gz
+tar -xzf ver_1.5.3.tar.gz
+cd pg_repack-ver_1.5.3
+
+export PG_CONFIG=/usr/pgsql-18/bin/pg_config
+$PG_CONFIG --version                      # должно быть 18.x
+$PG_CONFIG --libs                         # тут видно -lcurl/-lnuma (значит нужны libcurl-devel, numactl-devel)
+
+make  PG_CONFIG=$PG_CONFIG with_llvm=no
+sudo make install PG_CONFIG=$PG_CONFIG with_llvm=no
+```
+
+Ключ **`with_llvm=no`** убирает вызовы `clang`/`llvm-lto` (проверено: без него
+на PG18-подобной сборке падает `make[1]: /usr/bin/clang-19: No such file or directory`,
+с ним — собирается и ставит ровно 4 файла:
+`/usr/pgsql-18/bin/pg_repack`, `/usr/pgsql-18/lib/pg_repack.so`,
+`/usr/pgsql-18/share/extension/pg_repack.control`,
+`/usr/pgsql-18/share/extension/pg_repack--1.5.3.sql`).
+
+Если хотите JIT-биткод (не обязательно): поставьте clang/llvm **той же версии,
+что указана в PGXS**, и собирайте без флага:
+
+```bash
+# посмотреть, какой именно clang и llvm-lto ждёт ваш postgresql18-devel:
+grep -E '^(with_llvm|CLANG|LLVM_BINPATH)' "$(dirname "$($PG_CONFIG --pgxs)")/Makefile.global"
+# например: CLANG = /usr/bin/clang-19, LLVM_BINPATH = /usr/bin
+sudo dnf install -y clang llvm llvm-tools     # если версия совпадёт
+make PG_CONFIG=$PG_CONFIG
+```
+
+Проверка и включение расширения:
+
+```bash
+/usr/pgsql-18/bin/pg_repack --version
+sudo -u postgres psql -d mydb -c "CREATE EXTENSION pg_repack;"
+sudo -u postgres psql -d mydb -c "SELECT extname, extversion FROM pg_extension WHERE extname='pg_repack';"
+```
+
+### Вариант 3: собрать свой RPM (`rpmbuild -bb`) — ваш вариант
+
+В этом каталоге лежит готовый `pg_repack_18.spec` (сделан на основе официального
+спека PGDG, но самодостаточный: `pginstdir`/`pgmajorversion` определяются внутри,
+LLVM по умолчанию выключен).
+
+```bash
+# 1. дерево каталогов для сборки RPM (создаст ~/rpmbuild/{SPECS,SOURCES,BUILD,RPMS,SRPMS})
+rpmdev-setuptree
+
+# 2. положить спек и исходник
+cp /путь/к/scripts/pg_repack/pg_repack_18.spec ~/rpmbuild/SPECS/
+cd ~/rpmbuild/SOURCES
+curl -LO https://github.com/reorg/pg_repack/archive/refs/tags/ver_1.5.3.tar.gz
+ls -l ver_1.5.3.tar.gz        # имя файла обязано быть ровно таким (это basename из Source0)
+
+# 3. поставить BuildRequires из спека (репозиторий PGDG должен быть включён)
+sudo dnf builddep -y ~/rpmbuild/SPECS/pg_repack_18.spec
+# если dnf builddep недоступен — поставьте руками:
+# sudo dnf install -y gcc make postgresql18-devel readline-devel zlib-devel lz4-devel libzstd-devel openssl-devel libcurl-devel numactl-devel
+
+# 4. собрать (НЕ от root — rpmbuild от root капризничает)
+rpmbuild -bb ~/rpmbuild/SPECS/pg_repack_18.spec
+
+# 5. посмотреть и поставить результат
+ls -l ~/rpmbuild/RPMS/x86_64/pg_repack_18-1.5.3-1.el9.x86_64.rpm
+sudo dnf install -y ~/rpmbuild/RPMS/x86_64/pg_repack_18-1.5.3-1.el9.x86_64.rpm
+
+# 6. включить расширение в базах
+sudo -u postgres psql -d mydb -c "CREATE EXTENSION pg_repack;"
+```
+
+Полезные варианты запуска:
+
+```bash
+# собрать с JIT-биткодом (нужны clang и llvm подходящей версии)
+rpmbuild -bb --define 'llvm 1' ~/rpmbuild/SPECS/pg_repack_18.spec
+
+# если ваш спек — копия официального PGDG, ему нужно передать их макросы:
+rpmbuild -bb --define 'pgmajorversion 18' --define 'pginstdir /usr/pgsql-18' \
+             --define 'llvm 0' ~/rpmbuild/SPECS/pg_repack_18.spec
+```
+
+> Честно про проверку: сам `rpmbuild` я в своей песочнице запустить не смог (в ней нет
+> rpm-утилит и нет доступа к репозиториям ОС), поэтому спек проверьте у себя командой
+> `rpmbuild -bb ...` — он основан на официальном спеке PGDG `1.5.3-7PGDG`, а та часть,
+> что относится к самой сборке (`make with_llvm=no`, `DESTDIR=... install`, список
+> устанавливаемых файлов), проверена реальным запуском.
+
+### Ошибки именно на AlmaLinux 9 + PG18
+
+| Сообщение | Причина | Решение |
+|---|---|---|
+| `/usr/bin/clang-19: No such file or directory` + `Error 127` при `make`/`make install` (или `make[1]: clang: command not found`) | в `postgresql18-devel` включён `with_llvm=yes`, а clang/llvm не установлены | добавить `with_llvm=no` в `make` и `make install`; либо поставить clang/llvm нужной версии |
+| `/usr/bin/ld: cannot find -lcurl` | PG18 собран с libpq-oauth, `-lcurl` есть в `pg_config --libs` | `sudo dnf install -y libcurl-devel` |
+| `/usr/bin/ld: cannot find -lnuma` | PG18 собран с NUMA-поддержкой | `sudo dnf install -y numactl-devel` |
+| `/usr/bin/ld: cannot find -llz4` / `-lzstd` / `-lssl` / `-lcrypto` / `-lz` | те же причины: сборка PostgreSQL использует эти библиотеки | `sudo dnf install -y lz4-devel libzstd-devel openssl-devel zlib-devel` |
+| `/usr/bin/llvm-lto: No such file or directory` при `make install` | JIT-биткод собран, но нет llvm-tools | `sudo dnf install -y llvm llvm-tools` или `with_llvm=no` |
+| `error: File not found: .../usr/pgsql-18/bin/pg_repack` при rpmbuild | спек ставит файлы не туда: не определены `%{pginstdir}`/`%{pgmajorversion}` (официальный спек рассчитывает на макросы PGDG) | задать макросы через `--define` или взять `pg_repack_18.spec` из этого каталога |
+| `error: Bad source: .../SOURCES/ver_1.5.3.tar.gz: No such file or directory` | исходник не скачан в `~/rpmbuild/SOURCES` или назван иначе | `cd ~/rpmbuild/SOURCES && curl -LO https://github.com/reorg/pg_repack/archive/refs/tags/ver_1.5.3.tar.gz` |
+| `*** pg_config not found. Stop.` | `pg_config` не в `PATH` (PGDG ставит его в `/usr/pgsql-18/bin`) | `make PG_CONFIG=/usr/pgsql-18/bin/pg_config ...` |
+| `pg_config --version` показывает 18, а модуль не грузится (`undefined symbol`/`incompatible`) | собрано против другой major-версии | `make clean`, пересобрать с `PG_CONFIG=/usr/pgsql-18/bin/pg_config` |
+| `dnf builddep`/`rpmbuild` не найден | не установлены инструменты | `sudo dnf install -y rpmdevtools dnf-plugins-core rpm-build` |
+| `ERROR: pg_repack failed with error: pg_repack 1.5.3 is not installed in the database` | расширение не включено в эту базу | `CREATE EXTENSION pg_repack;` под суперпользователем |
+
+### Шаг A4. Быстрая проверка результата (на AlmaLinux)
+
+```bash
+export PATH=/usr/pgsql-18/bin:$PATH
+./test-pg_repack.sh --dbname mydb --user postgres                 # локальный сокет
+./test-pg_repack.sh --dbname mydb --user postgres --host localhost --port 5432
+```
+
+---
+
 ## 1. Быстрый путь (если всё уже установлено)
 
 ```bash
@@ -303,8 +503,10 @@ sudo make uninstall
 ## 3. Автоматический скрипт (всё делает сам)
 
 В этом каталоге лежит `install-pg_repack.sh` — он выполняет шаги 1–6:
-определяет ОС и менеджер пакетов, находит правильный `pg_config`, доустанавливает
-пакеты, скачивает исходники, собирает, устанавливает и проверяет результат.
+определяет ОС и менеджер пакетов, находит правильный `pg_config` (в том числе
+`/usr/pgsql-18/bin/pg_config` на AlmaLinux/RHEL), доустанавливает пакеты, сам
+подставляет `with_llvm=no`, если LLVM в PostgreSQL включён, а clang отсутствует,
+скачивает исходники, собирает, устанавливает и проверяет результат.
 
 ```bash
 chmod +x install-pg_repack.sh
@@ -327,6 +529,9 @@ chmod +x test-pg_repack.sh
 ./test-pg_repack.sh --dbname mydb --user postgres
 ./test-pg_repack.sh --dbname mydb --user postgres --port 5433 --host localhost
 ```
+
+Для AlmaLinux 9 + PostgreSQL 18 в этом же каталоге лежит `pg_repack_18.spec` —
+самодостаточный спек для сборки RPM (`rpmbuild -bb`), см. раздел 0-А выше.
 
 Результат: `PASS` — расширение работает; `FAIL` — смотрите вывод ошибки.
 
@@ -527,8 +732,43 @@ Successful output: `INFO: repacking table "public.t1"`.
 | `ERROR: program 'pg_repack X' does not match database library 'pg_repack Y'` | rebuild/reinstall both parts from one version, then `ALTER EXTENSION pg_repack UPDATE;` |
 | `undefined symbol` / `wrong ELF class` when loading `pg_repack.so` | module built for the wrong PostgreSQL version/architecture: `make clean`, rebuild with the right `pg_config` |
 
+### AlmaLinux 9 / RHEL 9 with PostgreSQL 18 (from the PGDG repo)
+
+```bash
+# PGDG repository (once), then PostgreSQL 18 + its dev package
+sudo dnf install -y https://download.postgresql.org/pub/repos/yum/reporpms/EL-9-x86_64/pgdg-redhat-repo-latest.noarch.rpm
+sudo dnf -qy module disable postgresql
+sudo dnf install -y postgresql18-server postgresql18 postgresql18-devel
+
+# build tools and libraries (PG18 is built with all of them)
+sudo dnf install -y gcc make readline-devel zlib-devel lz4-devel libzstd-devel openssl-devel libcurl-devel numactl-devel
+
+# build and install (note: pg_config is not in PATH with PGDG packages)
+cd /tmp && curl -LO https://github.com/reorg/pg_repack/archive/refs/tags/ver_1.5.3.tar.gz && tar -xzf ver_1.5.3.tar.gz
+cd pg_repack-ver_1.5.3
+make        PG_CONFIG=/usr/pgsql-18/bin/pg_config with_llvm=no
+sudo make install PG_CONFIG=/usr/pgsql-18/bin/pg_config with_llvm=no
+```
+
+* **`with_llvm=no` matters**: PGDG's `postgresql18-devel` has `with_llvm=yes`, so make tries to
+  emit LLVM bitcode and dies with `/usr/bin/clang-19: No such file or directory` / `Error 127`
+  if clang and llvm are not installed (verified reproduction). Either add the flag, or install
+  matching `clang`/`llvm`/`llvm-tools`.
+* **`libcurl-devel` and `numactl-devel`** are needed because PG18's `pg_config --libs` contains
+  `-lcurl` and `-lnuma`; without them you get `/usr/bin/ld: cannot find -lcurl` (or `-lnuma`).
+* The easiest option of all: `sudo dnf install -y pg_repack_18` — PGDG already ships a 1.5.3 RPM
+  for PostgreSQL 18; you only need `CREATE EXTENSION pg_repack;` afterwards.
+* To build **your own RPM**: `rpmdev-setuptree`, copy [`pg_repack_18.spec`](pg_repack_18.spec) from
+  this folder to `~/rpmbuild/SPECS/`, download `ver_1.5.3.tar.gz` into `~/rpmbuild/SOURCES/`,
+  run `sudo dnf builddep -y ~/rpmbuild/SPECS/pg_repack_18.spec` and then
+  `rpmbuild -bb ~/rpmbuild/SPECS/pg_repack_18.spec`. The spec is self-contained (it defines
+  `pginstdir`/`pgmajorversion` itself and defaults to `with_llvm=no`); the PGDG spec copied
+  verbatim needs `--define 'pgmajorversion 18' --define 'pginstdir /usr/pgsql-18'` because those
+  macros come from the PGDG build infrastructure, not from `postgresql18-devel`.
+
 ### Scripts in this folder
 
 * `install-pg_repack.sh` — does steps 1–5 automatically (OS detection, dependencies, download,
   build, install, verification). Run `./install-pg_repack.sh --help`.
 * `test-pg_repack.sh` — end-to-end smoke test on a temporary table (`PASS`/`FAIL`).
+* `pg_repack_18.spec` — self-contained RPM spec for AlmaLinux/RHEL 9 + PostgreSQL 18.

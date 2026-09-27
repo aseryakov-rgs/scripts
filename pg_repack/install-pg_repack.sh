@@ -161,10 +161,19 @@ install_deps() {
       fi
       ;;
     dnf|yum)
-      $SUDO "$PKG" install -y gcc make zlib-devel curl tar "postgresql$PG_MAJOR-devel"
+      # на RHEL/Alma/Rocky пакеты PostgreSQL берутся из репозитория PGDG;
+      # readline/lz4/zstd/openssl/libcurl/numactl нужны потому, что сборка PostgreSQL
+      # (особенно 18) перечисляет их в "pg_config --libs" (-lz -llz4 -lzstd -lssl -lcrypto -lcurl -lnuma)
+      $SUDO "$PKG" install -y gcc make curl tar \
+        "postgresql$PG_MAJOR-devel" \
+        readline-devel zlib-devel lz4-devel libzstd-devel openssl-devel \
+        libcurl-devel numactl-devel
+      $SUDO dnf -y install rpm-build rpmdevtools 2>/dev/null || true
       ;;
     zypper)
-      $SUDO zypper --non-interactive install gcc make zlib-devel curl tar "postgresql$PG_MAJOR-server-devel"
+      $SUDO zypper --non-interactive install gcc make curl tar \
+        "postgresql$PG_MAJOR-server-devel" \
+        libopenssl-devel zlib-devel liblz4-devel libzstd-devel libcurl-devel
       ;;
     apk)
       $SUDO apk add --no-cache build-base zlib-dev curl tar "postgresql$PG_MAJOR-dev"
@@ -237,15 +246,52 @@ tar -xzf "$BUILD_DIR/$TARBALL" -C "$BUILD_DIR" || die "не удалось ра�
 ok "исходники распакованы: $SRC_DIR"
 
 # ---------------------------------------------------------------------------
+# 4b. LLVM / JIT-биткод / LLVM bitcode
+#     В PGDG-сборках PostgreSQL 18 в PGXS прописано with_llvm = yes, и make тогда
+#     вызывает clang и llvm-lto. Если их нет — сборка падает
+#     ("/usr/bin/clang-19: No such file or directory"). Поэтому, если clang не
+#     найден, добавляем with_llvm=no.
+# ---------------------------------------------------------------------------
+LLVM_ARG=""
+PGXS_PATH="$("$PG_CONFIG_BIN" --pgxs)"
+# Makefile.global лежит рядом с pgxs.mk: .../pgxs/src/makefiles/pgxs.mk -> .../pgxs/src/Makefile.global
+PGXS_MAKEFILE=""
+for cand in "$(dirname "$(dirname "$PGXS_PATH")")/Makefile.global" \
+            "$(dirname "$PGXS_PATH")/Makefile.global" \
+            "$(dirname "$(dirname "$(dirname "$PGXS_PATH")")")/Makefile.global"; do
+  [ -r "$cand" ] && { PGXS_MAKEFILE="$cand"; break; }
+done
+if [ -r "$PGXS_MAKEFILE" ]; then
+  WITH_LLVM="$(sed -n 's/^with_llvm[[:space:]]*=[[:space:]]*//p' "$PGXS_MAKEFILE" | head -1 | tr -d '[:space:]')"
+  CLANG_BIN="$(sed -n 's/^CLANG[[:space:]]*=[[:space:]]*//p' "$PGXS_MAKEFILE" | head -1 | tr -d '[:space:]')"
+  LLVM_BINPATH_DIR="$(sed -n 's/^LLVM_BINPATH[[:space:]]*=[[:space:]]*//p' "$PGXS_MAKEFILE" | head -1 | tr -d '[:space:]')"
+  if [ "$WITH_LLVM" = "yes" ]; then
+    HAVE_CLANG=0
+    if [ -n "$CLANG_BIN" ] && [ -x "$CLANG_BIN" ]; then HAVE_CLANG=1
+    elif command -v clang >/dev/null 2>&1; then HAVE_CLANG=1; fi
+    HAVE_LTO=1
+    if [ -n "$LLVM_BINPATH_DIR" ] && [ ! -x "$LLVM_BINPATH_DIR/llvm-lto" ]; then HAVE_LTO=0; fi
+    if [ "$HAVE_CLANG" = 1 ] && [ "$HAVE_LTO" = 1 ]; then
+      ok "LLVM включён в PGXS и clang найден (${CLANG_BIN:-clang}) — JIT-биткод будет собран"
+    else
+      LLVM_ARG="with_llvm=no"
+      warn "PGXS требует LLVM (with_llvm=yes), но не найден ${CLANG_BIN:-clang}$([ "$HAVE_LTO" = 0 ] && echo " или ${LLVM_BINPATH_DIR}/llvm-lto")"
+      warn "собираю с with_llvm=no — без JIT-биткода. Нужен биткод? Поставьте clang и llvm той же версии."
+    fi
+  fi
+fi
+MAKE_ARGS_EFF="${MAKE_ARGS:-} ${LLVM_ARG}"
+
+# ---------------------------------------------------------------------------
 # 5. Сборка / build
 # ---------------------------------------------------------------------------
-hr; log "Собираю: make PG_CONFIG=$PG_CONFIG_BIN ${MAKE_ARGS:-}"; hr
+hr; log "Собираю: make PG_CONFIG=$PG_CONFIG_BIN ${MAKE_ARGS_EFF}"; hr
 cd "$SRC_DIR" || die "не могу перейти в $SRC_DIR"
 MAKE_LOG="$BUILD_DIR/make.log"
 # shellcheck disable=SC2086
-if ! make ${MAKE_ARGS:-} PG_CONFIG="$PG_CONFIG_BIN" >"$MAKE_LOG" 2>&1; then
+if ! make ${MAKE_ARGS_EFF} PG_CONFIG="$PG_CONFIG_BIN" >"$MAKE_LOG" 2>&1; then
   tail -n 25 "$MAKE_LOG" >&2
-  die "ошибка сборки (полный лог: $MAKE_LOG). Подсказки: нужен dev-пакет PostgreSQL $PG_MAJOR (postgresql$PG_MAJOR-devel / postgresql-server-dev-$PG_MAJOR) и zlib-devel/zlib1g-dev"
+  die "ошибка сборки (полный лог: $MAKE_LOG). Подсказки: нужен dev-пакет PostgreSQL $PG_MAJOR (postgresql$PG_MAJOR-devel / postgresql-server-dev-$PG_MAJOR), zlib-devel/zlib1g-dev, а для PG18 ещё libcurl-devel и numactl-devel (в pg_config --libs есть -lcurl и -lnuma)"
 fi
 ok "сборка выполнена (лог: $MAKE_LOG)"
 
@@ -257,10 +303,10 @@ ok "получены файлы: bin/pg_repack, lib/pg_repack.so, lib/pg_repack.
 # ---------------------------------------------------------------------------
 # 6. Установка / install
 # ---------------------------------------------------------------------------
-hr; log "Устанавливаю: make install PG_CONFIG=$PG_CONFIG_BIN ${MAKE_ARGS:-}"; hr
+hr; log "Устанавливаю: make install PG_CONFIG=$PG_CONFIG_BIN ${MAKE_ARGS_EFF}"; hr
 INSTALL_LOG="$BUILD_DIR/make-install.log"
 # shellcheck disable=SC2086
-if ! $SUDO make ${MAKE_ARGS:-} PG_CONFIG="$PG_CONFIG_BIN" install >"$INSTALL_LOG" 2>&1; then
+if ! $SUDO make ${MAKE_ARGS_EFF} PG_CONFIG="$PG_CONFIG_BIN" install >"$INSTALL_LOG" 2>&1; then
   tail -n 25 "$INSTALL_LOG" >&2
   die "ошибка установки (полный лог: $INSTALL_LOG)"
 fi
@@ -283,10 +329,12 @@ check_file "$SHAREDIR/extension/pg_repack.control"
 check_file "$SHAREDIR/extension/pg_repack--${REPACK_VERSION}.sql"
 
 if [ -x "$BINDIR/pg_repack" ]; then
-  VOUT="$("$BINDIR/pg_repack" --version 2>&1)" || true
+  # на всякий случай подкладываем в LD_LIBRARY_PATH каталог библиотек PostgreSQL (libpq)
+  VOUT="$(LD_LIBRARY_PATH="$("$PG_CONFIG_BIN" --libdir):${LD_LIBRARY_PATH:-}" "$BINDIR/pg_repack" --version 2>&1)" || true
   case "$VOUT" in
     *"$REPACK_VERSION"*) ok "клиент отвечает: $VOUT" ;;
-    *) warn "не удалось запустить клиент: $VOUT" ;;
+    *) warn "не удалось запустить клиент: $VOUT"
+       warn "если это ошибка про libpq.so — добавьте $("$PG_CONFIG_BIN" --libdir) в LD_LIBRARY_PATH (или запускайте с этой переменной)" ;;
   esac
 fi
 
