@@ -66,7 +66,11 @@ This will execute the script and perform the necessary cleaning and moving of fi
 
 * [`pg_repack/README.md`](pg_repack/README.md) — how to build and install the **pg_repack**
   PostgreSQL extension from source (step by step, RU + EN), plus ready-to-use scripts:
-  [`pg_repack/install-pg_repack.sh`](pg_repack/install-pg_repack.sh) and
-  [`pg_repack/test-pg_repack.sh`](pg_repack/test-pg_repack.sh).
+  [`pg_repack/install-pg_repack.sh`](pg_repack/install-pg_repack.sh),
+  [`pg_repack/test-pg_repack.sh`](pg_repack/test-pg_repack.sh) and the RPM spec
+  [`pg_repack/pg_repack_18.spec`](pg_repack/pg_repack_18.spec) for
+  **AlmaLinux 9 + PostgreSQL 18** with `rpmbuild`.
 * [`pg_repack/README.md`](pg_repack/README.md) — как собрать и установить расширение
-  **pg_repack** из исходников (пошагово, RU + EN) и готовые скрипты установки/проверки.
+  **pg_repack** из исходников (пошагово, RU + EN), готовые скрипты установки/проверки
+  и RPM-спек [`pg_repack/pg_repack_18.spec`](pg_repack/pg_repack_18.spec)
+  для **AlmaLinux 9 + PostgreSQL 18** (сборка `rpmbuild -bb`).
