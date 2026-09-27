@@ -209,6 +209,7 @@ rpmbuild -bb --define 'pgmajorversion 18' --define 'pginstdir /usr/pgsql-18' \
 
 | Сообщение | Причина | Решение |
 |---|---|---|
+| `Нет соответствия аргументу: pg_repack_18` / `Error: Unable to find a match: pg_repack_18` при `dnf install` | репозиторий PGDG не подключён (или файл репозитория старый, без секции `[pgdg18]`, или репозиторий отключён) | подключить/обновить репозиторий и включить `pgdg18` — команды ниже, либо просто запустить `./diagnose-pgdg-pg18.sh` (с `--fix` сам починит) |
 | `/usr/bin/clang-19: No such file or directory` + `Error 127` при `make`/`make install` (или `make[1]: clang: command not found`) | в `postgresql18-devel` включён `with_llvm=yes`, а clang/llvm не установлены | добавить `with_llvm=no` в `make` и `make install`; либо поставить clang/llvm нужной версии |
 | `/usr/bin/ld: cannot find -lcurl` | PG18 собран с libpq-oauth, `-lcurl` есть в `pg_config --libs` | `sudo dnf install -y libcurl-devel` |
 | `/usr/bin/ld: cannot find -lnuma` | PG18 собран с NUMA-поддержкой | `sudo dnf install -y numactl-devel` |
