@@ -72,12 +72,17 @@ if [ -z "$PG_CONFIG_BIN" ]; then
   if command -v pg_config >/dev/null 2>&1; then
     PG_CONFIG_BIN="$(command -v pg_config)"
   else
-    for c in /usr/lib/postgresql/*/bin/pg_config /usr/pgsql-*/bin/pg_config /usr/local/pgsql/bin/pg_config; do
+    # порядок важен: сначала PGDG/дистрибутив, потом Postgres Pro (в т.ч. «для 1С»)
+    for c in /usr/lib/postgresql/*/bin/pg_config \
+             /usr/pgsql-*/bin/pg_config \
+             /opt/pgpro/*/bin/pg_config \
+             /usr/local/pgsql/bin/pg_config; do
       [ -x "$c" ] && PG_CONFIG_BIN="$c" && break
     done
   fi
 fi
-[ -n "$PG_CONFIG_BIN" ] || { err "pg_config не найден: укажите --pg-config /путь/pg_config"; exit 1; }
+[ -n "$PG_CONFIG_BIN" ] || { err "pg_config не найден: укажите --pg-config /путь/pg_config (для Postgres Pro 1C это /opt/pgpro/1c-18/bin/pg_config)"; exit 1; }
+command -v "$PG_CONFIG_BIN" >/dev/null 2>&1 || [ -x "$PG_CONFIG_BIN" ] || { err "pg_config недоступен: $PG_CONFIG_BIN"; exit 1; }
 
 CLIENT="$("$PG_CONFIG_BIN" --bindir)/pg_repack"
 if [ ! -x "$CLIENT" ]; then
@@ -99,6 +104,18 @@ if ! command -v psql >/dev/null 2>&1; then
 fi
 command -v "$PSQL" >/dev/null 2>&1 || { err "не найден psql (добавьте \$($PG_CONFIG_BIN --bindir) в PATH)"; exit 1; }
 
+# psql тоже может не найти свои библиотеки — лечим так же
+if ! "$PSQL" --version >/dev/null 2>&1; then
+  PG_LIBDIR="$("$PG_CONFIG_BIN" --libdir)"
+  if LD_LIBRARY_PATH="$PG_LIBDIR:${LD_LIBRARY_PATH:-}" "$PSQL" --version >/dev/null 2>&1; then
+    export LD_LIBRARY_PATH="$PG_LIBDIR:${LD_LIBRARY_PATH:-}"
+    warn "psql не находил библиотеки — добавил $PG_LIBDIR в LD_LIBRARY_PATH"
+  else
+    err "psql не запускается: $("$PSQL" --version 2>&1)"
+    exit 1
+  fi
+fi
+
 # аргументы подключения / connection arguments
 CONN=(-d "$DBNAME")
 [ -n "$DBUSER" ] && CONN+=(-U "$DBUSER")
@@ -106,7 +123,20 @@ CONN=(-d "$DBNAME")
 [ -n "$DBPORT" ] && CONN+=(-p "$DBPORT")
 
 log "клиент: $CLIENT"
-CLIENT_VER="$("$CLIENT" --version 2>&1)" || { err "не удалось запустить клиент: $CLIENT_VER"; exit 1; }
+# клиент может не найти libpq (у Postgres Pro библиотеки лежат в своём libdir) —
+# тогда добавляем libdir в LD_LIBRARY_PATH и пробуем снова
+if ! CLIENT_VER="$("$CLIENT" --version 2>&1)"; then
+  PG_LIBDIR="$("$PG_CONFIG_BIN" --libdir)"
+  if CLIENT_VER="$(LD_LIBRARY_PATH="$PG_LIBDIR:${LD_LIBRARY_PATH:-}" "$CLIENT" --version 2>&1)"; then
+    export LD_LIBRARY_PATH="$PG_LIBDIR:${LD_LIBRARY_PATH:-}"
+    warn "клиенту нужен libpq из $PG_LIBDIR — добавил этот каталог в LD_LIBRARY_PATH"
+    warn "чтобы не повторять: echo '$PG_LIBDIR' | sudo tee /etc/ld.so.conf.d/pgpro.conf && sudo ldconfig"
+  fi
+fi
+if ! CLIENT_VER="$("$CLIENT" --version 2>&1)"; then
+  err "не удалось запустить клиент: $CLIENT_VER"
+  exit 1
+fi
 ok "версия клиента: $CLIENT_VER"
 
 SERVER_VER="$("$PSQL" "${CONN[@]}" -tAc "SHOW server_version" 2>&1)" || { err "нет подключения к базе $DBNAME: $SERVER_VER"; exit 1; }

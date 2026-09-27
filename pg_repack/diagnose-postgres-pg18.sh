@@ -64,8 +64,30 @@ if [ -n "$PG_CONFIG_BIN" ]; then
   run "'$PG_CONFIG_BIN' --sharedir"
   run "'$PG_CONFIG_BIN' --libs"
   PGXS="$("$PG_CONFIG_BIN" --pgxs)"
+  if [ -r "$PGXS" ]; then
+    ok "PGXS есть: $PGXS"
+  else
+    bad "НЕТ файла PGXS ($PGXS) — значит не установлен пакет разработчика (devel). Без него make не соберёт расширение."
+    warn "для Postgres Pro это postgrespro-1c-18-devel / postgrespro-std-18-devel / postgrespro-ent-18-devel"
+  fi
   MF="$(dirname "$(dirname "$PGXS")")/Makefile.global"
   [ -r "$MF" ] && run "grep -E '^(with_llvm|CLANG|LLVM_BINPATH)' '$MF'"
+
+  # версия сервера (для сверки с pg_config)
+  SERVER_VER=""
+  for psql_bin in "$("$PG_CONFIG_BIN" --bindir)/psql" /opt/pgpro/*/bin/psql /usr/pgsql-*/bin/psql psql; do
+    [ -x "$psql_bin" ] || command -v "$psql_bin" >/dev/null 2>&1 || continue
+    SERVER_VER="$("$psql_bin" -tAc 'SHOW server_version' 2>/dev/null | tr -d ' ')"
+    [ -n "$SERVER_VER" ] && { ok "версия работающего сервера: $SERVER_VER (проверено через $psql_bin)"; break; }
+  done
+  [ -n "$SERVER_VER" ] || wr "не удалось определить версию работающего сервера (psql не отвечает?)"
+  PGVER="$("$PG_CONFIG_BIN" --version | awk '{print $2}')"
+  case "$PGVER" in
+    18.*) ok "pg_config от PostgreSQL $PGVER — major-версия совпадает с сервером 18" ;;
+    *) [ -n "$PGVER" ] && wr "pg_config от версии $PGVER: если сервер другой major-версии, расширение не соберётся корректно" ;;
+  esac
+  [ -n "$SERVER_VER" ] && [ "${PGVER%%.*}" != "${SERVER_VER%%.*}" ] && \
+    bad "РАСХОЖДЕНИЕ: pg_config $PGVER, а сервер $SERVER_VER — собирать нужно против той же major-версии!"
 else
   bad "pg_config не найден вовсе — значит не установлен dev-пакет (в нём pg_config, PGXS и заголовки)."
   run "$PKG provides '*/pg_config' 2>&1 | head -10"
@@ -120,10 +142,13 @@ EOF
   !!! И пакет pg_repack 1.4.6 из AppStream тоже не подходит: он для ванильного
   !!! PostgreSQL и не совпадёт с вашим сервером.
 
-  1) Сначала проверьте, нет ли готового пакета от Postgres Pro (он называется
-     pg-repack-1c-18 / pg-repack-std-18 / pg-repack-ent-18 — с дефисом, а не подчёркиванием):
+  1) Проверьте, нет ли готового пакета от Postgres Pro (называется pg-repack-1c-18 /
+     pg-repack-std-18 / pg-repack-ent-18 — с дефисом, а не подчёркиванием):
        $PKG list --available '*repack*'
-       $PKG install -y pg-repack-1c-18        # если нашелся
+       $PKG install -y pg-repack-1c-18        # если такой пакет есть
+     ВАЖНО: в репозитории «Postgresql for 1C 18» пакета pg-repack-* обычно НЕТ —
+     там только postgrespro-1c-18-*. Если его нет, это нормально: идём в пункт 2 (сборка).
+     Пакет pg_repack 1.4.6 из AppStream НЕ подходит (он для ванильного PostgreSQL).
 
   2) Если готового пакета нет — собираем из исходников против ВАШЕГО pg_config:
 
@@ -132,8 +157,9 @@ EOF
      sudo $PKG install -y postgrespro-1c-18-devel
      # если имени нет — подскажет:  $PKG provides '*/pg_config'
 
-     # b) инструменты и библиотеки
-     sudo $PKG install -y gcc make zlib-devel readline-devel lz4-devel libzstd-devel openssl-devel
+     # b) инструменты и библиотеки (в PG18 в "pg_config --libs" бывают -lcurl и -lnuma)
+     sudo $PKG install -y gcc make zlib-devel readline-devel \
+          lz4-devel libzstd-devel openssl-devel libcurl-devel numactl-devel
 
      # c) сборка (with_llvm=no — чтобы не требовались clang и llvm-lto)
      cd /tmp

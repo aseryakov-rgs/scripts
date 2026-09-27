@@ -20,6 +20,15 @@ pg_repack состоит из **двух частей**, и обе ставят�
 | **Серверная** | расширение БД: `pg_repack.so`, `pg_repack.control`, `pg_repack--1.5.3.sql` | каталог `lib/` | `$(pg_config --pkglibdir)` и `$(pg_config --sharedir)/extension` |
 | **Клиент** | консольная утилита `pg_repack` | каталог `bin/` | `$(pg_config --bindir)` |
 
+**Куда смотреть в этом документе:**
+
+| Ваша ситуация | Раздел |
+|---|---|
+| PostgreSQL 18 «для 1С» (Postgres Pro 1C, `/opt/pgpro/1c-18`) | **0-Б** ← ваш случай |
+| PostgreSQL 18 из репозитория PGDG (`/usr/pgsql-18`) + сборка RPM | 0-А |
+| Обычная установка из исходников на Linux | 1 → 2 |
+| Только проверить, что уже установлено | 3 → 4 |
+
 Три правила, из-за которых чаще всего ломается сборка:
 
 1. **Версия `pg_config` = версия сервера PostgreSQL.** Если сервер 16, то `pg_config`
@@ -31,7 +40,12 @@ pg_repack состоит из **двух частей**, и обе ставят�
 
 ---
 
-## 0-А. ВАШ СЛУЧАЙ: AlmaLinux 9 + PostgreSQL 18 и сборка RPM
+## 0-А. AlmaLinux 9 + PostgreSQL 18 из репозитория PGDG (и сборка RPM)
+
+> ⚠️ **Если у вас PostgreSQL «для 1С» (репозиторий `postgresql-1c-18`, установка в
+> `/opt/pgpro/1c-18`) — это НЕ ваш раздел, идите сразу в раздел 0-Б ниже.**
+> Признаки: `ls /etc/yum.repos.d/` показывает `postgresql-1c-18.repo`,
+> `rpm -q pgdg-redhat-repo` — «не установлен», `rpm -q postgresql18-server` — «не установлен».
 
 Это отдельный раздел для конфигурации **AlmaLinux 9 (MantisBT 9.8) + PostgreSQL 18
 из репозитория PGDG**, где последняя команда была
@@ -257,53 +271,94 @@ dnf list --available '*repack*'        # ← именно так; '*pg_repack*' 
 dnf provides 'pg-repack*'
 ```
 
-### Путь 1 (самый простой): готовый пакет Postgres Pro
+### Путь 1: проверить готовый пакет Postgres Pro (у вас его нет — см. ниже)
 
 ```bash
-dnf list --available '*repack*'
-# если нашелся pg-repack-1c-18 (или pg-repack-std-18):
-sudo dnf install -y pg-repack-1c-18
-ls -l /opt/pgpro/1c-18/bin/pg_repack
-# включить расширение в нужных базах:
-sudo -u postgres psql -d mydb -c "CREATE EXTENSION pg_repack;"
+dnf list --available '*repack*'        # ← именно так; '*pg_repack*' этот пакет НЕ найдёт
+dnf provides 'pg-repack*'
 ```
 
-### Путь 2: собрать из исходников против вашего `pg_config`
+**Факт по вашему серверу (проверено по вашему выводу `dnf list`):** в репозитории
+`postgresql-1c-18` есть только пакеты `postgrespro-1c-18-*` (18.4-1.el9), а пакета
+`pg-repack-1c-18` там **нет**. Единственный видимый `pg_repack` — версии 1.4.6 из
+репозитория `appstream`, и он **не подходит** (собран для ванильного PostgreSQL).
+Значит идём Путём 2 — сборка из исходников.
 
-У Postgres Pro `pg_config` **не** попадает в `PATH` — он лежит в `/opt/pgpro/1c-18/bin/pg_config`
-и приходит с пакетом разработчика (`postgrespro-1c-18-devel`).
+### Путь 2: собрать из исходников против вашего `pg_config` (ваш путь)
+
+У вас уже есть `/opt/pgpro/1c-18/bin/pg_config` (показал `PostgreSQL 18.3`) — это главное.
+Пошагово, копируйте целиком:
 
 ```bash
-# 1) проверить, что pg_config вообще есть
-/opt/pgpro/1c-18/bin/pg_config --version
+# ---- шаг 1: проверить, что есть PGXS (без него make не соберёт расширение) ----
+/opt/pgpro/1c-18/bin/pg_config --pgxs
+ls -l "$(/opt/pgpro/1c-18/bin/pg_config --pgxs)"     # файл должен существовать!
+# если файла нет — установить пакет разработчика:
+sudo dnf install -y postgrespro-1c-18-devel
+
+# ---- шаг 2: посмотреть, какие библиотеки нужны для линковки ----
 /opt/pgpro/1c-18/bin/pg_config --libs
 
-# 2) если его нет — поставить пакет разработчика вашего продукта
-dnf list --available '*1c-18*'                 # посмотреть точные имена пакетов
-sudo dnf install -y postgrespro-1c-18-devel
-# подсказка, если имя другое:
-# dnf provides '*/pg_config'
+# ---- шаг 3: поставить инструменты сборки ----
+sudo dnf install -y gcc make zlib-devel readline-devel \
+                    lz4-devel libzstd-devel openssl-devel libcurl-devel numactl-devel
 
-# 3) инструменты сборки и библиотеки
-sudo dnf install -y gcc make zlib-devel readline-devel lz4-devel libzstd-devel openssl-devel
-
-# 4) собрать pg_repack 1.5.3
+# ---- шаг 4: скачать исходники ----
 cd /tmp
 curl -LO https://github.com/reorg/pg_repack/archive/refs/tags/ver_1.5.3.tar.gz
 tar -xzf ver_1.5.3.tar.gz
-cd pg_repack-ver-1.5.3 2>/dev/null || cd pg_repack-ver_1.5.3
+cd pg_repack-ver-1.5.3
 
+# ---- шаг 5: собрать и установить ----
 export PG_CONFIG=/opt/pgpro/1c-18/bin/pg_config
+$PG_CONFIG --version                 # должно быть 18.x
+
 make        PG_CONFIG=$PG_CONFIG with_llvm=no
 sudo make install PG_CONFIG=$PG_CONFIG with_llvm=no
 
-# 5) включить расширение в базах
-sudo -u postgres psql -d mydb -c "CREATE EXTENSION pg_repack;"
-/opt/pgpro/1c-18/bin/pg_repack --version
+# ---- шаг 6: проверить, куда легли файлы ----
+$PG_CONFIG --bindir      # тут должен быть pg_repack
+$PG_CONFIG --pkglibdir   # тут pg_repack.so
+$PG_CONFIG --sharedir    # тут подкаталог extension с pg_repack.control и pg_repack--1.5.3.sql
+
+# ---- шаг 7: включить расширение в базе (в каждой нужной!) ----
+sudo -u postgres /opt/pgpro/1c-18/bin/psql -d mydb -c "CREATE EXTENSION pg_repack;"
+sudo -u postgres /opt/pgpro/1c-18/bin/psql -d mydb -c \
+  "SELECT extname, extversion FROM pg_extension WHERE extname='pg_repack';"
+
+# ---- шаг 8: первый запуск ----
+/opt/pgpro/1c-18/bin/pg_repack -d mydb --dry-run
+/opt/pgpro/1c-18/bin/pg_repack -d mydb -t public._reference123   # пример
 ```
 
-Ключ `with_llvm=no` оставьте: он убирает зависимость от `clang`/`llvm-lto`, которая как раз и
-ломала ваши предыдущие сборки.
+> Если у вас уже стояла сборка pg_repack и вы обновляете её — сначала `make clean` в каталоге
+> исходников, потом шаги 5–7 и `ALTER EXTENSION pg_repack UPDATE;`.
+
+**Про версии 18.3 и 18.4.** Ваш `pg_config` говорит `PostgreSQL 18.3`, а в репозитории сейчас
+пакеты 18.4 — значит доступно обновление:
+
+```bash
+rpm -q postgrespro-1c-18-server          # какая версия установлена у вас
+dnf check-update 'postgrespro-1c-18*'    # что доступно
+sudo -u postgres /opt/pgpro/1c-18/bin/psql -c "SHOW server_version;"   # что реально работает
+```
+
+Это не мешает сборке: в пределах одной major-версии (18.x) пересобирать расширение при
+обновлении с 18.3 на 18.4 не нужно — файлы расширения лежат в `/opt/pgpro/1c-18/...` и
+остаются на месте. Но если сервер был обновлён **до** сборки — просто соберите против
+установленного `pg_config` (он всегда показывает установленную версию).
+
+### Практика: repack баз 1С
+
+* `pg_repack` требует у таблицы **первичный ключ** или уникальный индекс по `NOT NULL` столбцу.
+  У некоторых служебных/временных таблиц 1С их нет — такие таблицы пропускаются с сообщением
+  вида `ERROR: Cannot repack table ... without primary key or unique key`. Это нормально.
+* Только раздутость индексов (без перезаписи таблицы) лечится быстрее:
+  `pg_repack -d mydb -t public._document123 --only-indexes -j 4`.
+* Запускайте обслуживание в окно низкой нагрузки: в конце pg_repack берёт короткую
+  `ACCESS EXCLUSIVE`-блокировку. Таймаут ожидания: `-T 60`, не убивать бэкенды: `-D`.
+* Обязательно делайте бэкап и **пробуйте сначала на тестовой базе**.
+* Не забудьте `ANALYZE` (pg_repack делает его сам, отключается `-Z`).
 
 ### Путь 3 (запасной): собрать на PGDG-версии и перенести модуль
 
@@ -331,7 +386,11 @@ Postgres Pro — это пропатченный PostgreSQL, поэтому пр
 | `fatal error: postgres.h: No such file or directory` | не установлен `postgrespro-1c-18-devel` | поставить его из вашего репозитория (`dnf provides '*/pg_config'` подскажет имя) |
 | `ERROR: could not load library ".../pg_repack.so": undefined symbol` | модуль собран против другого PostgreSQL (например, PGDG `/usr/pgsql-18`) или другой версии | пересобрать с `PG_CONFIG=/opt/pgpro/1c-18/bin/pg_config` |
 | `ERROR: pg_repack failed with error: pg_repack 1.5.3 is not installed in the database` | расширение не включено в эту базу | `CREATE EXTENSION pg_repack;` под суперпользователем |
-| `dnf install pg_repack` предлагает версию 1.4.6 из `appstream` | это пакет для ванильного PostgreSQL | не ставить; использовать Путь 1 или 2 |
+| `dnf install pg_repack` предлагает версию 1.4.6 из `appstream` | это пакет для ванильного PostgreSQL | не ставить; использовать Путь 2 (сборка из исходников) |
+| `dnf provides 'pg-repack*'` → `Ошибка: Совпадений не найдено` | в репозитории «Postgresql for 1C 18» готового pg_repack нет (проверено) | это ожидаемо, переходите к Путю 2 — сборке из исходников |
+| `ls: нет файла pgxs.mk` / `make: .../pgxs.mk: No such file or directory` | не установлен `postgrespro-1c-18-devel` (PGXS лежит в нём) | `sudo dnf install -y postgrespro-1c-18-devel` |
+| `pg_config --version` = 18.3, а в репозитории 18.4 | доступно обновление PostgreSQL | обновляться или нет — ваше решение; в пределах 18.x пересборка pg_repack не требуется |
+| `pg_repack: error while loading shared libraries: libpq.so.5: cannot open shared object file` | клиент не находит библиотеки Postgres Pro (они в `/opt/pgpro/1c-18/lib`, а не в системных путях) | один раз настроить: `echo '/opt/pgpro/1c-18/lib' \| sudo tee /etc/ld.so.conf.d/pgpro.conf && sudo ldconfig`; либо разово `LD_LIBRARY_PATH=/opt/pgpro/1c-18/lib /opt/pgpro/1c-18/bin/pg_repack ...` |
 
 ### Диагностика одним скриптом
 
@@ -877,6 +936,33 @@ sudo make install PG_CONFIG=/usr/pgsql-18/bin/pg_config with_llvm=no
   `pginstdir`/`pgmajorversion` itself and defaults to `with_llvm=no`); the PGDG spec copied
   verbatim needs `--define 'pgmajorversion 18' --define 'pginstdir /usr/pgsql-18'` because those
   macros come from the PGDG build infrastructure, not from `postgresql18-devel`.
+
+### Special case: PostgreSQL for 1C (Postgres Pro 1C)
+
+If PostgreSQL was installed from Postgres Professional's repo (on your server:
+`/etc/yum.repos.d/postgresql-1c-18.repo`, packages `postgrespro-1c-18-*`, install prefix
+`/opt/pgpro/1c-18`), then `pg_config` is **not** in `PATH` and the PGDG package
+`pg_repack_18` does not exist — that repo only ships `postgrespro-1c-18-*`, and the
+`pg_repack 1.4.6` from `appstream` is built for vanilla PostgreSQL and must not be used.
+Build from source instead, pointing at your `pg_config`:
+
+```bash
+export PG_CONFIG=/opt/pgpro/1c-18/bin/pg_config
+$PG_CONFIG --pgxs | xargs ls -l        # must exist, else: dnf install -y postgrespro-1c-18-devel
+$PG_CONFIG --libs                      # shows what has to be linked
+sudo dnf install -y gcc make zlib-devel readline-devel lz4-devel libzstd-devel openssl-devel libcurl-devel numactl-devel
+
+cd /tmp && curl -LO https://github.com/reorg/pg_repack/archive/refs/tags/ver_1.5.3.tar.gz
+tar -xzf ver_1.5.3.tar.gz && cd pg_repack-ver-1.5.3
+make        PG_CONFIG=$PG_CONFIG with_llvm=no
+sudo make install PG_CONFIG=$PG_CONFIG with_llvm=no
+sudo -u postgres /opt/pgpro/1c-18/bin/psql -d mydb -c "CREATE EXTENSION pg_repack;"
+```
+
+`with_llvm=no` removes the clang/llvm-lto dependency (the error that used to break the build).
+This flow was verified end-to-end in a sandbox with the same `/opt/pgpro/1c-18` layout:
+build, `make install`, `CREATE EXTENSION pg_repack` and an actual table repack all succeeded
+(2000 kB → 1000 kB for the table, row count unchanged).
 
 ### Scripts in this folder
 
