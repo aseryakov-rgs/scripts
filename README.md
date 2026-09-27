@@ -61,3 +61,12 @@ This will execute the script and perform the necessary cleaning and moving of fi
 
 * Скрипт записывает логи событий в файл `C:\tasksheduler-scripts\CleanUsersFiles.log`.
 * Этот скрипт следует использовать с осторожностью, поскольку он может удалить важные файлы или директории.
+
+# Other documentation / Другая документация
+
+* [`pg_repack/README.md`](pg_repack/README.md) — how to build and install the **pg_repack**
+  PostgreSQL extension from source (step by step, RU + EN), plus ready-to-use scripts:
+  [`pg_repack/install-pg_repack.sh`](pg_repack/install-pg_repack.sh) and
+  [`pg_repack/test-pg_repack.sh`](pg_repack/test-pg_repack.sh).
+* [`pg_repack/README.md`](pg_repack/README.md) — как собрать и установить расширение
+  **pg_repack** из исходников (пошагово, RU + EN) и готовые скрипты установки/проверки.
